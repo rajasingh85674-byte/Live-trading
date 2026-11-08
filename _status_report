@@ -1,3 +1,0 @@
-        self.tts.speak("Status. %s mode. %d of %d consecutive losses. %d open positions. Lockout %s." % (
-            self.broker.mode.title(), st["consecutive_losses"], st["limit"],
-            len(self.broker.open_positions()), "active" if st["locked"] else "clear"))
