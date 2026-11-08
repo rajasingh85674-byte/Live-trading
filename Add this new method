@@ -1,5 +1,0 @@
-    def _test_voice(self):
-        self.tts.configure(self._fields["eleven_key"].text, self._fields["voice_id"].text,
-                           self._sp_voice.text == "ON")
-        self.log("Testing ElevenLabs voice ...")
-        self.tts.speak("Tactical Neural Matrix voice link online.", priority=True)
