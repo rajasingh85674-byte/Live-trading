@@ -1,3 +1,0 @@
-env:
-  ANDROID_API: "31"
-  ANDROID_NDK_API: "21"
