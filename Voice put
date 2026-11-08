@@ -1,0 +1,2 @@
+        self.tts = VoiceAlerts(os.path.join(self.data_dir, "tts_cache"), self.cfg["eleven_key"],
+                               self.cfg["voice_id"], self.cfg["voice_alerts"], log=self.log)
