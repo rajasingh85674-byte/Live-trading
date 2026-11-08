@@ -745,3 +745,4 @@ class TacticalApp(App):
 if __name__ == "__main__":
     TacticalApp().run()
 from voice_alerts import DEFAULT_VOICE_ID, VoiceAlerts
+        self.tts.configure(new["eleven_key"], new["voice_id"], new["voice_alerts"])
