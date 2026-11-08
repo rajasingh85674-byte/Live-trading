@@ -1,0 +1,136 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  ANDROID_API: "33"
+  ANDROID_BUILD_TOOLS: "33.0.2"
+  ANDROID_NDK_VERSION: "25.1.8937393"   # = NDK r25b
+  ANDROID_NDK_API: "24"
+  CMDLINE_TOOLS_ZIP: "commandlinetools-linux-11076708_latest.zip"
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git zip unzip curl build-essential ccache cmake autoconf automake \
+            libtool libtool-bin pkg-config zlib1g-dev libncurses5-dev \
+            libncursesw5-dev libtinfo5 libffi-dev libssl-dev libltdl-dev \
+            libsqlite3-dev
+
+      - name: Install Buildozer and Cython
+        run: |
+          python -m pip install --upgrade pip
+          pip install "setuptools<70" wheel virtualenv
+          pip install "cython==0.29.36"
+          pip install "buildozer==1.5.0"
+          pip install requests plyer urllib3 certifi
+          buildozer --version
+
+      - name: Install Android SDK and NDK
+        run: |
+          set -eu
+          export ANDROID_HOME="$HOME/android-sdk"
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+
+          # 1) Download and extract command-line tools to cmdline-tools/latest
+          curl -fsSL -o /tmp/cmdline-tools.zip \
+            "https://dl.google.com/android/repository/${CMDLINE_TOOLS_ZIP}"
+          rm -rf /tmp/cmdline-tools-extract
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools-extract
+          rm -rf "$ANDROID_HOME/cmdline-tools/latest"
+          mv /tmp/cmdline-tools-extract/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+
+          # 2) Legacy shim: some tools still look for $SDK/tools/bin/sdkmanager
+          mkdir -p "$ANDROID_HOME/tools/bin"
+          printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$SDKMANAGER" > "$ANDROID_HOME/tools/bin/sdkmanager"
+          chmod +x "$ANDROID_HOME/tools/bin/sdkmanager"
+
+          # 3) Licenses ('yes' dies with SIGPIPE when sdkmanager closes stdin, so tolerate it)
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
+
+          # 4) Packages
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "platform-tools" \
+            "platforms;android-${ANDROID_API}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK_VERSION}"
+
+          echo "ANDROID_HOME=$ANDROID_HOME"                          >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME"                      >> "$GITHUB_ENV"
+          echo "ANDROIDSDK=$ANDROID_HOME"                            >> "$GITHUB_ENV"
+          echo "ANDROIDNDK=$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROIDAPI=${ANDROID_API}"                           >> "$GITHUB_ENV"
+          echo "NDKAPI=${ANDROID_NDK_API}"                           >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin"              >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools"                        >> "$GITHUB_PATH"
+
+      - name: Verify toolchain
+        run: |
+          java -version
+          python --version
+          cython --version
+          test -x "$ANDROIDSDK/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$ANDROIDSDK/tools/bin/sdkmanager"
+          "$ANDROIDSDK/tools/bin/sdkmanager" --version
+          ls -la "$ANDROIDSDK/platforms" "$ANDROIDSDK/build-tools"
+          test -f "$ANDROIDNDK/source.properties"
+          cat "$ANDROIDNDK/source.properties"
+
+      - name: Point buildozer.spec at the installed SDK and NDK
+        run: |
+          sed -i "s|^android.sdk_path =.*|android.sdk_path = ${ANDROIDSDK}|" buildozer.spec
+          sed -i "s|^android.ndk_path =.*|android.ndk_path = ${ANDROIDNDK}|" buildozer.spec
+          grep -nE "^android\.(sdk_path|ndk_path|api|minapi|ndk|ndk_api|archs)" buildozer.spec
+
+      - name: Cache Buildozer build directory
+        uses: actions/cache@v4
+        with:
+          path: |
+            .buildozer
+            ~/.buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec', 'requirements.txt') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-
+
+      - name: Build APK
+        run: buildozer -v android debug
+
+      - name: List output
+        run: ls -lh bin/
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: tactical-neural-matrix-apk
+          path: bin/*.apk
+          if-no-files-found: error
