@@ -1,6 +1,0 @@
-DEFAULT_CFG = {
-    "api_key": "", "api_secret": "", "mode": "PAPER", "exchange": "NSE", "symbol": "RELIANCE",
-    "interval": "5minute", "capital": 100000.0, "risk_pct": 1.0, "min_rr": 2.0, "min_agree": 6,
-    "product": "MIS", "max_qty": 500,
-    "eleven_key": "", "voice_id": DEFAULT_VOICE_ID, "voice_alerts": True,
-}
