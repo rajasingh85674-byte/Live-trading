@@ -1,3 +1,0 @@
-            cfg["eleven_key"] = str(cfg.get("eleven_key") or "").strip()
-            cfg["voice_id"] = str(cfg.get("voice_id") or DEFAULT_VOICE_ID).strip()
-            cfg["voice_alerts"] = bool(cfg.get("voice_alerts", True))
