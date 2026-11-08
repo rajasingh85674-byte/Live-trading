@@ -1,0 +1,13 @@
+    def _register_closed(self, closed):
+        for t in closed:
+            self.risk.record_trade_result(t["pnl"], t["symbol"])
+            self.log("CLOSED %s %s %s: exit %.2f  P&L %.2f" % (
+                t["reason"], t["side"], t["symbol"], t["exit"], t["pnl"]))
+            self.tts.speak("%s closed by %s. %s of %.0f rupees." % (
+                t["symbol"], t["reason"].lower(), "Profit" if t["pnl"] >= 0 else "Loss", abs(t["pnl"])))
+        if closed:
+            Clock.schedule_once(lambda dt: (self._refresh_positions(), self._refresh_risk()))
+            if self.risk.is_locked():
+                self.log("HARD DAILY LOCKOUT ENGAGED - new trades blocked until tomorrow.")
+                self.tts.speak("Hard daily lockout engaged. Trading is blocked until tomorrow.",
+                               priority=True)
