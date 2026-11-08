@@ -1,0 +1,3 @@
+        if d.approved:
+            self.tts.speak("%s setup approved on %s. %d of %d agents agree. Risk reward 1 to %.1f." % (
+                d.direction.title(), d.symbol, d.agree, d.total, d.rr))
