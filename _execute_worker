@@ -1,5 +1,0 @@
-            self.tts.speak("%s order filled on %s. Stop loss and target are set." % (
-                pos["side"].title(), pos["symbol"]))
-        except BrokerError as exc:
-            self.log("Order failed: %s" % exc)
-            self.tts.speak("Order failed.", priority=True)
