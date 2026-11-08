@@ -1,0 +1,6 @@
+        add_field("eleven_key", "ELEVENLABS API KEY", c["eleven_key"], password=True)
+        add_field("voice_id", "VOICE ID", c["voice_id"])
+        grid.add_widget(tlabel("VOICE ALERTS", color=DIM, font=11))
+        self._sp_voice = Spinner(text="ON" if c["voice_alerts"] else "OFF", values=("ON", "OFF"),
+                                 background_normal="", background_color=PANEL_HI, color=CYAN)
+        grid.add_widget(self._sp_voice)
