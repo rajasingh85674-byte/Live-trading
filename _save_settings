@@ -1,0 +1,3 @@
+                "eleven_key": f["eleven_key"].text.strip(),
+                "voice_id": f["voice_id"].text.strip() or DEFAULT_VOICE_ID,
+                "voice_alerts": self._sp_voice.text == "ON",
