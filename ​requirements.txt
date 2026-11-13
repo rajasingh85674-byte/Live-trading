@@ -1,0 +1,9 @@
+# Used for desktop testing only. The Android build reads the 'requirements' line in buildozer.spec.
+kivy==2.3.0
+requests==2.31.0
+urllib3==1.26.18
+idna==3.7
+certifi
+# pure-Python versions on purpose (newer ones contain compiled .so files)
+charset-normalizer==2.1.1
+chardet==5.2.0
