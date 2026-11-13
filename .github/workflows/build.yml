@@ -1,0 +1,254 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  ANDROID_API: "33"
+  ANDROID_BUILD_TOOLS: "33.0.2"
+  ANDROID_NDK_VERSION: "25.1.8937393"
+  CMDLINE_TOOLS_ZIP: "commandlinetools-linux-11076708_latest.zip"
+  BUILDOZER_WARN_ON_ROOT: "0"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install system packages and compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gfortran autoconf automake libtool libtool-bin autopoint gettext \
+            libblas-dev liblapack-dev cython3 \
+            git zip unzip curl file pkg-config cmake ccache \
+            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 libffi-dev libssl-dev \
+            libsqlite3-dev libbz2-dev libreadline-dev liblzma-dev uuid-dev \
+            libdb-dev libgdbm-dev tk-dev
+
+      - name: Install Android SDK, build-tools and NDK
+        run: |
+          export ANDROID_HOME="$HOME/android-sdk"
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          curl -fsSL -o /tmp/cmdtools.zip "https://dl.google.com/android/repository/${CMDLINE_TOOLS_ZIP}"
+          unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
+          rm -rf "$ANDROID_HOME/cmdline-tools/latest"
+          mv /tmp/cmdtools/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+          # legacy path that python-for-android / buildozer still look for
+          mkdir -p "$ANDROID_HOME/tools/bin"
+          printf '#!/bin/sh\nexec "%s/cmdline-tools/latest/bin/sdkmanager" "$@"\n' "$ANDROID_HOME" > "$ANDROID_HOME/tools/bin/sdkmanager"
+          chmod +x "$ANDROID_HOME/tools/bin/sdkmanager"
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$SDKM" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
+          set -o pipefail
+          "$SDKM" --sdk_root="$ANDROID_HOME" \
+            "platform-tools" \
+            "platforms;android-${ANDROID_API}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          test -x "$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}/aapt2"
+          test -d "$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Make /usr/local writable (python-for-android installs its own Python there)
+        run: |
+          sudo mkdir -p /usr/local/bin /usr/local/lib /usr/local/include /usr/local/share
+          sudo chown -R "$(id -u):$(id -g)" /usr/local/bin /usr/local/lib /usr/local/include /usr/local/share
+          sudo chmod -R a+rwX /usr/local/bin /usr/local/lib /usr/local/include /usr/local/share
+
+      - name: Install Buildozer and Cython
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "buildozer==1.5.0" "cython==0.29.36" "setuptools<70" virtualenv
+          which python cython buildozer
+          cython --version
+
+      - name: Locate the project (finds buildozer.spec and main.py wherever they are)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          echo "Repository root: $GITHUB_WORKSPACE"
+          find_file() {
+            find . -maxdepth 5 -type f -iname "$1" \
+              -not -path "./.git/*" -not -path "*/.buildozer/*" -not -path "*/node_modules/*" -not -path "*/bin/*" \
+              | awk '{ print gsub("/","/") " " $0 }' | sort -n | head -n 1 | cut -d' ' -f2-
+          }
+          SPEC="$(find_file 'buildozer.spec')"
+          if [ -z "$SPEC" ]; then SPEC="$(find_file 'buildozer.spec.*')"; fi
+          if [ -z "$SPEC" ]; then
+            echo "::error::buildozer.spec was not found anywhere in this repository (branch: ${GITHUB_REF_NAME})."
+            echo "Files in the repository (first 100):"
+            (git ls-files | head -n 100) || true
+            echo "Make sure the file is committed on THIS branch and is not listed in .gitignore."
+            exit 1
+          fi
+          echo "Found spec file: $SPEC"
+          SPEC_DIR="$(cd "$(dirname "$SPEC")" && pwd)"
+          if [ "$(basename "$SPEC")" != "buildozer.spec" ]; then
+            echo "Making a copy named exactly buildozer.spec (lowercase), which Buildozer requires"
+            cp -v "$SPEC" "$SPEC_DIR/buildozer.spec"
+          fi
+          sed -i 's/\r$//' "$SPEC_DIR/buildozer.spec"      # remove Windows line endings
+          APP_DIR="$SPEC_DIR"
+
+          # main.py must be inside the folder named by source.dir (default: the spec folder)
+          if [ -f "$APP_DIR/main.py" ]; then
+            SRC_DIR="$APP_DIR"
+          else
+            MAIN="$(find_file 'main.py')"
+            if [ -z "$MAIN" ]; then
+              echo "::error::main.py was not found in the repository."
+              (git ls-files | head -n 100) || true
+              exit 1
+            fi
+            SRC_DIR="$(cd "$(dirname "$MAIN")" && pwd)"
+            REL="$(realpath --relative-to="$APP_DIR" "$SRC_DIR")"
+            echo "main.py is in $SRC_DIR, so source.dir is set to: $REL"
+            if grep -qE '^source\.dir[[:space:]]*=' "$APP_DIR/buildozer.spec"; then
+              sed -i -E "s|^source\.dir[[:space:]]*=.*|source.dir = ${REL}|" "$APP_DIR/buildozer.spec"
+            else
+              sed -i "/^\[app\]/a source.dir = ${REL}" "$APP_DIR/buildozer.spec"
+            fi
+          fi
+
+          # the app imports these files; without them it can only show an error screen
+          MISSING=0
+          for f in agents_module.py broker_connector.py; do
+            if [ ! -f "$SRC_DIR/$f" ]; then
+              echo "::error::$f is missing next to main.py ($SRC_DIR). The app cannot start without it."
+              MISSING=1
+            fi
+          done
+          if [ ! -f "$SRC_DIR/voice_alerts.py" ]; then
+            echo "::warning::voice_alerts.py is missing, so the app will use the phone's own voice (no ElevenLabs)."
+          fi
+          if [ "$MISSING" -ne 0 ]; then
+            echo "Files next to main.py:"; ls -la "$SRC_DIR"
+            exit 1
+          fi
+
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+          echo "Build folder: $APP_DIR"
+          ls -la "$APP_DIR"
+
+      - name: Point buildozer.spec at the SDK and NDK
+        shell: bash
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          test -f buildozer.spec
+          set_key() {
+            key="$1"; val="$2"
+            if grep -qE "^${key}[[:space:]]*=" buildozer.spec; then
+              sed -i -E "s|^${key}[[:space:]]*=.*|${key} = ${val}|" buildozer.spec
+            else
+              sed -i "/^\[app\]/a ${key} = ${val}" buildozer.spec
+            fi
+            grep -qE "^${key}[[:space:]]*=" buildozer.spec || { echo "::error::could not set ${key}"; exit 1; }
+          }
+          set_key android.sdk_path "${ANDROID_HOME}"
+          set_key android.ndk_path "${ANDROID_NDK_HOME}"
+          set_key android.api "${ANDROID_API}"
+          set_key android.minapi 24
+          set_key android.ndk 25b
+          set_key android.ndk_api 24
+          set_key android.archs arm64-v8a
+          grep -nE "^(source\.dir|requirements|android\.(api|minapi|ndk|ndk_api|sdk_path|ndk_path|archs)|p4a\.branch)" buildozer.spec
+          if ! grep -q "charset-normalizer==2.1.1" buildozer.spec; then
+            echo "::warning::buildozer.spec does not pin charset-normalizer==2.1.1 (newer versions put PC binaries in the APK)."
+          fi
+
+      - name: Build debug APK (as root, so no permission errors)
+        shell: bash   # bash with "-e -o pipefail": a failed Buildozer now fails this step, even through "| tee"
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -o pipefail
+          sudo -E env "PATH=$PATH" "HOME=$HOME" "ANDROID_HOME=$ANDROID_HOME" \
+            "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" \
+            "BUILDOZER_WARN_ON_ROOT=0" \
+            buildozer -v android debug 2>&1 | tee build.log
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" || true
+
+      - name: Show the important part of the build log
+        if: failure()
+        shell: bash
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          echo "=== lines with errors ==="
+          grep -nEi "error|failed|traceback|not found|permission denied" build.log | tail -n 60 || true
+          echo "=== last 150 lines ==="
+          tail -n 150 build.log || true
+
+      - name: Collect the APK into bin/
+        shell: bash
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          mkdir -p bin
+          if ! ls bin/*.apk > /dev/null 2>&1; then
+            echo "No APK in bin/, searching the whole workspace..."
+            find "$GITHUB_WORKSPACE" -name "*.apk" -not -path "*/node_modules/*" -exec cp -v {} bin/ \;
+          fi
+          ls -la bin
+          if ! ls bin/*.apk > /dev/null 2>&1; then
+            echo "Buildozer finished but produced no APK."
+            tail -n 150 build.log || true
+            exit 1
+          fi
+
+      - name: Check the APK contains only ARM64 binaries
+        shell: bash
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          APK="$(ls bin/*.apk | head -n 1)"
+          rm -rf /tmp/apkcheck && mkdir -p /tmp/apkcheck
+          unzip -q "$APK" -d /tmp/apkcheck
+          cd /tmp/apkcheck
+          # python-for-android packs the Python modules (site-packages) in assets/private.*
+          for f in assets/private.*; do
+            [ -f "$f" ] && mkdir -p private && tar -xf "$f" -C private || true
+          done
+          echo "Compiled files found in the APK:"
+          find . -type f \( -name "*.so" -o -name "*.so.*" \) | wc -l
+          BAD="$(find . -type f \( -name "*.so" -o -name "*.so.*" \) -exec file {} + | grep -Ei "x86-64|x86_64|80386" || true)"
+          if [ -n "$BAD" ]; then
+            echo "ERROR: these files are for a PC processor, not for the phone:"
+            echo "$BAD"
+            echo "Remove the package that ships them (or pin a pure-Python version) in buildozer.spec."
+            exit 1
+          fi
+          echo "OK: no x86 binaries inside the APK."
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: tactical-neural-matrix-apk
+          path: ${{ env.APP_DIR }}/bin/*.apk
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ env.APP_DIR }}/build.log
+          if-no-files-found: ignore
