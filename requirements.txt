@@ -1,7 +1,0 @@
-# Desktop development/testing only. The Android build uses `requirements` in buildozer.spec.
-kivy==2.3.0
-requests==2.31.0
-urllib3==1.26.18
-idna
-charset-normalizer
-certifi
